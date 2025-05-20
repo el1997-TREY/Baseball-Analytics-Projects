@@ -1,0 +1,676 @@
+---
+title: "Baseball Analytics"
+subtitle: "A comprehensive analysis of factors that influence at-bat outcomes"
+format:
+  revealjs: 
+    # embed-resources: true
+    slide-number: true
+    chalkboard: 
+      buttons: false
+    preview-links: auto
+    css: styles.css
+    footer: STAT 405/605 - Andersen Pickard, Aly Khanmohamed, Jacob Andreini, Enyu Li
+server: shiny
+---
+
+# Introduction  {background="#6B6B6B"}
+
+## Background {background="#a6bee3"}
+- We wondered if various factors, such as at-bat length and pitcher/batter handedness, impacted at-bat outcomes
+- We were curious if longer at-bats favored the hitter or pitcher more. In other words, who wears down faster?
+- Additionally, we wondered if our data could point to a potential bias in end-of-season awards voting
+
+## Data Sources {background="#a6bee3"}
+- Main dataset from Retrosheet: 1,228,237 rows and 128 columns
+  - Contained play-by-play data from MLB regular season and postseason, 2018-24
+
+- Secondary dataset from Baseball Savant: 617 rows and 15 columns
+  - Contained individual player data from 2024 regular season, min. 10 plate appearances
+
+# At-Bat Length Data   {background="#6B6B6B"}
+
+## Pitch vs. Foul Ball Totals  {background="#a6bee3"}
+
+- Pitch totals correlates to foul ball totals
+- As pitches increase, foul balls also increase
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+library(DBI)
+library(RSQLite)
+
+library(DBI)
+library(RSQLite)
+
+# Connect to the SQLite database
+dcon <- dbConnect(RSQLite::SQLite(), "405baseball.sqlite")
+
+# Load the CSV file (replace "path_to_your_data.csv" with the actual path to your file)
+data <- read.csv("stat405baseball.csv")
+
+# Write the data to the SQLite database, creating the stat405baseball table
+dbWriteTable(dcon, "stat405baseball", data, overwrite = TRUE)
+
+# Check if the table is now in the database
+tables <- dbListTables(dcon)
+
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(showtext)
+library(tidyr)
+library(stringr)
+font_add_google("Montserrat", "montserrat")
+showtext_auto()
+dcon <- dbConnect(RSQLite::SQLite(), "405baseball.sqlite")
+query1 <- "SELECT 
+  f.batter,
+  f.total_fouls,
+  f.plate_appearances AS pa_foul,
+  f.total_fouls * 1.0 / f.plate_appearances AS fouls_per_pa,
+  n.total_nump,
+  n.plate_appearances AS pa_nump,
+  n.total_nump * 1.0 / n.plate_appearances AS nump_per_pa
+FROM
+  (SELECT 
+     batter,
+     SUM(LENGTH(pitches) - LENGTH(REPLACE(pitches, 'F', ''))) AS total_fouls,
+     COUNT(*) AS plate_appearances
+   FROM stat405baseball
+   GROUP BY batter) f
+LEFT JOIN
+  (SELECT 
+     batter,
+     SUM(nump) AS total_nump,
+     COUNT(*) AS plate_appearances
+   FROM stat405baseball
+   GROUP BY batter) n
+ON f.batter = n.batter"
+result <- dbGetQuery(dcon, query1)
+lm_model <- lm(total_nump ~ total_fouls, data = result)
+par(bg = "#f9f9f9", mar = c(5, 5, 4, 2))
+plot(
+  result$total_fouls, result$total_nump,
+  xlab = "Foul Balls Taken",
+  ylab = "Pitches Seen",
+  main = "Fouls vs. Pitches (2018–2024)",
+  ylim = c(0, 20000),
+  col = "#2c3e50",        
+  pch = 19,              
+  cex = 0.5,               
+  cex.lab = 1.2,           
+  cex.main = 1.4,          
+  col.lab = "#34495e",     
+  col.main = "#2c3e50",    
+  bty = "n"               
+)
+grid(col = "#dddddd", lty = "dotted")
+abline(lm_model, col = "#2980b9", lwd = 2.5) 
+legend("topleft", legend = "Linear Fit", col = "#2980b9", lwd = 2.5, bty = "n")
+```
+:::
+
+## Pitches per Plate Appearance  {background="#a6bee3"}
+
+- Most common number of pitches: 4
+- Longer at-bats become increasingly more rare
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+baseballdata <- dbGetQuery(dcon, "SELECT * FROM stat405baseball")
+par(bg = "#f9f9f9", mar = c(5, 5, 4, 2))  
+h <- hist(
+  baseballdata$nump,
+  breaks = 20,
+  col = "#74b9ff",         
+  border = "white",        
+  ylim = c(0, 230000),
+  xlim = c(0, 12),
+  xlab = "Number of Pitches in Plate Appearance",
+  ylab = "Frequency",
+  main = "Histogram of Pitch Counts",
+  axes = FALSE
+)
+
+axis(1, at = seq(0, 12, 2), labels = seq(0, 12, 2), col.axis = "#2d3436", 
+     cex.axis = 1.1)
+axis(2, at = seq(0, 230000, 20000), col.axis = "#2d3436", cex.axis = 1.1)
+
+abline(h = seq(0, 230000, 20000), col = "#dfe6e9", lty = "dotted")
+abline(v = seq(0, 12, 2), col = "#dfe6e9", lty = "dotted")
+
+text(
+  x = h$mids[h$counts > 0],
+  y = h$counts[h$counts > 0] + 6000,
+  labels = h$counts[h$counts > 0],
+  col = "#0984e3",
+  font = 2,
+  cex = .5
+)
+
+box(col = "#636e72", lwd = 1.2)
+```
+:::
+
+# Home Run Breakdowns   {background="#6B6B6B"}
+
+## HR by Handedness  {background="#a6bee3"}
+- Foul advantage boosted by favorable handedness
+- In unfavorable matchup, high foul count still beneficial
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+
+query9 <- "WITH foul_balls AS (
+  SELECT *,
+         LENGTH(pitches) - LENGTH(REPLACE(pitches, 'F', '')) AS foul_ball_count,
+         CASE 
+           WHEN bathand = 'R' AND pithand = 'R' THEN 'RHH vs RHP'
+           WHEN bathand = 'L' AND pithand = 'L' THEN 'LHH vs LHP'
+           WHEN bathand = 'R' AND pithand = 'L' THEN 'RHH vs LHP'
+           WHEN bathand = 'L' AND pithand = 'R' THEN 'LHH vs RHP'
+           ELSE NULL
+         END AS handedness_matchup
+  FROM stat405baseball
+),
+filtered AS (
+  SELECT * FROM foul_balls WHERE handedness_matchup IS NOT NULL
+),
+grouped AS (
+  SELECT foul_ball_count, handedness_matchup, COUNT(*) AS total_at_bats,
+         AVG(hr * 1.0) AS hr_rate
+  FROM filtered
+  GROUP BY foul_ball_count, handedness_matchup
+),
+filtered_min10 AS (
+  SELECT * FROM grouped WHERE total_at_bats >= 10
+),
+sum_hr_rate AS (
+  SELECT foul_ball_count, SUM(hr_rate) AS total_hr_rate
+  FROM filtered_min10
+  GROUP BY foul_ball_count
+)
+SELECT f.foul_ball_count, f.handedness_matchup, f.total_at_bats, f.hr_rate,
+       f.hr_rate / s.total_hr_rate AS prop_hr_rate
+FROM filtered_min10 f
+JOIN sum_hr_rate s ON f.foul_ball_count = s.foul_ball_count
+ORDER BY f.foul_ball_count, f.handedness_matchup;"
+library(ggplot2)
+library(scales)
+library(viridis)
+
+hrmatchup <- dbGetQuery(dcon, query9)
+
+ggplot(hrmatchup, aes(x = foul_ball_count, y = prop_hr_rate, 
+                      fill = handedness_matchup)) +
+  geom_area(alpha = 0.7, color = "white", linewidth = 0.3) +
+  scale_fill_viridis_d(name = "Matchup", option = "D") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "HR Rate by Foul Ball Count and Matchup",
+    x = "Foul Balls",
+    y = "Home Run Rate (Proportion)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 11),
+    panel.grid.major = element_line(color = "grey85"),
+    panel.grid.minor = element_blank(),
+    legend.position = "top",
+    legend.title = element_text(face = "bold")
+  )
+
+```
+:::
+
+## HR by Foul Counts  {background="#a6bee3"}
+- HR rate increases in AB with 9+ fouls
+- Suggests that longer AB is more beneficial for batters
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+query3 <- "WITH foul_counts AS (
+  SELECT *,
+         LENGTH(pitches) - LENGTH(REPLACE(pitches, 'F', '')) AS foul_ball_count
+  FROM stat405baseball
+),
+aggregated AS (
+  SELECT foul_ball_count,
+         COUNT(*) AS total_at_bats,
+         AVG(hr) AS hr_rate
+  FROM foul_counts
+  GROUP BY foul_ball_count
+)
+SELECT *
+FROM aggregated
+WHERE total_at_bats >= 10
+ORDER BY foul_ball_count;"
+filtered_data <- dbGetQuery(dcon, query3)
+
+ggplot(filtered_data, aes(x = foul_ball_count, y = hr_rate)) +
+  geom_segment(aes(xend = foul_ball_count, y = 0, yend = hr_rate),
+               color = "#4682B4", linewidth = 1.2, alpha = 0.7) +
+  geom_point(color = "#D73027", size = 5) +
+  geom_text(aes(label = round(hr_rate, 2)), vjust = -1, size = 4, 
+            color = "black") +
+  labs(
+    title = "Home Run Rate by Number of Foul Balls in AB",
+    x = "Number of Foul Balls",
+    y = "Home Run Rate"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_blank()
+  )
+```
+:::
+
+# Results by Ball/Strike Count   {background="#6B6B6B"}
+
+## SLG by Count  {background="#a6bee3"}
+
+- 3-ball counts or 2-0 result in best SLG
+- Pitcher's counts have lower SLG, as expected
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+base_values <- c(single = 1, double = 2, triple = 3, hr = 4, walk = 1, iw = 1, xi = 1)
+data <- dbGetQuery(dcon, "SELECT * FROM stat405baseball")
+slugging_data <- data %>%
+  filter(!(count %in% c(40, 41, 42, 43, 3, 13, 23, 33))) %>%
+  mutate(
+    total_bases = single * base_values["single"] +
+      double * base_values["double"] +
+      triple * base_values["triple"] +
+      hr * base_values["hr"] +
+      walk * base_values["walk"] +
+      iw * base_values["iw"] +
+      xi * base_values["xi"],
+    total_at_bats = (single + double + triple + hr + walk + iw + xi + othout)  # Assuming 1 for out as part of PA
+  ) %>%
+  group_by(count) %>%
+  summarise(
+    total_bases = sum(total_bases),
+    total_at_bats = sum(total_at_bats),
+    slugging_pct = total_bases / total_at_bats
+  ) %>%
+  mutate(slugging_diff = slugging_pct - mean(slugging_pct))  # Difference from the league average slugging
+
+ggplot(slugging_data, aes(x = reorder(count, slugging_diff), y = slugging_diff, 
+                          fill = slugging_diff > 0)) +
+  geom_bar(stat = "identity", width = 0.7, color = "gray20") +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40", 
+             linewidth = 0.8) +
+  scale_fill_manual(
+    values = c("red", "steelblue"),
+    labels = c("Below League Avg", "Above League Avg"),
+    name = "SLG Diff"
+  ) +
+  labs(
+    title = "Slugging Percentage by Count Against League Average",
+    x = "Count",
+    y = "SLG Difference"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 12),
+    legend.position = "top"
+  )
+```
+:::
+
+## OBP by Count  {background="#a6bee3"}
+
+- Only 3-ball counts have above league avg OBP
+- Expected this result because OBP includes BB/HBP
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+
+library(dplyr)
+library(ggplot2)
+library(DBI)
+library(RSQLite)
+query7 <- "WITH filtered AS (
+  SELECT *
+  FROM stat405baseball
+  WHERE count NOT IN (40, 41, 42, 43, 3, 13, 23, 33)
+),
+with_obp AS (
+  SELECT
+    count,
+    (single + double + triple + hr + walk + iw + xi) AS reached_base,
+    (single + double + triple + hr + walk + iw + xi + othout) AS total_pa
+  FROM filtered
+),
+grouped AS (
+  SELECT
+    count,
+    SUM(reached_base) AS total_reached_base,
+    SUM(total_pa) AS total_pa,
+    SUM(reached_base) * 1.0 / SUM(total_pa) AS obp
+  FROM with_obp
+  GROUP BY count
+),
+with_league_avg AS (
+  SELECT 
+    *,
+    AVG(obp) OVER () AS league_obp
+  FROM grouped
+)
+SELECT 
+  count,
+  total_reached_base,
+  total_pa,
+  obp,
+  obp - league_obp AS obp_diff
+FROM with_league_avg
+ORDER BY obp_diff DESC;
+"
+
+library(ggplot2)
+
+obp_data <- dbGetQuery(dcon, query7)
+obp_data$count <- factor(obp_data$count)
+
+ggplot(obp_data, aes(x = reorder(count, obp_diff), y = obp_diff, 
+                     color = obp_diff > 0)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", 
+             linewidth = 0.8) +
+  geom_segment(aes(xend = count, y = 0, yend = obp_diff), linewidth = 1.2) +  
+  geom_point(size = 5) + 
+  scale_color_manual(
+    values = c("red", "steelblue"),
+    labels = c("Below Avg", "Above Avg"),
+    name = "OBP Diff"
+  ) +
+  labs(
+    title = "On-Base Percentage by Count vs League Average",
+    subtitle = "Positive values = better than league average",
+    x = "Count",
+    y = "Difference from League-Wide OBP"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 12),
+    legend.position = "top"
+  )
+```
+:::
+
+## Killer  {background="#a6bee3"}
+
+::: {.center}
+```{r}
+#| echo: false
+#| fig-width: 10
+#| fig-height: 4.5
+library(ggplot2)
+library(dplyr)
+library(grid)
+library(shiny)
+library(shinyjs)
+
+# Example dataset for the sake of demonstration
+killerdata <- data.frame(
+  last_first = c("Batter A", "Batter B", "Batter C", "Batter D"),
+  exit_velocity_avg = c(90, 92, 88, 85),
+  xslg = c(0.450, 0.480, 0.400, 0.410),
+  bb_percent = c(0.12, 0.10, 0.15, 0.13),
+  whiff_percent = c(0.20, 0.18, 0.25, 0.22),
+  ppa = c(3.8, 4.0, 3.5, 3.7)
+)
+
+# Example batter score weights
+batter_score_weights <- c(
+  xslg = 0.4,
+  bb_percent = 0.3,
+  whiff_percent = 0.2,
+  exit_velocity_avg = 0.1
+)
+
+# Define percentile labels for the stats
+stat_labels <- c(
+  xslg = "Expected SLG",
+  bb_percent = "Walk Rate (%)",
+  whiff_percent = "Whiff Rate (%)",
+  exit_velocity_avg = "Exit Velocity (mph)"
+)
+
+# Introduction slide content
+cat("## Introduction\n\nThis presentation covers an in-depth analysis of the factors that influence batting performance in baseball.\n\nWe will explore various metrics that assess the quality of at-bats, including walk rate, strikeouts, exit velocity, and more.")
+
+# Data overview slide content
+cat("## Data Overview\n\nThe dataset consists of several metrics for individual batters including:\n\n- Walk rate (bb_percent)\n- Expected SLG (xslg)\n- Whiff rate (whiff_percent)\n- Pitches per plate appearance (ppa)\n- Exit velocity average (exit_velocity_avg)\n\nLet's start by exploring the first few rows of the dataset.")
+
+# Display first few rows of data
+head(killerdata)
+
+# Metrics and visualizations slide content
+cat("## Metrics and Visualizations\n\nWe will now visualize some key metrics that describe batter performance.\n\nThe following plot shows the relationship between exit velocity and expected SLG (xslg).")
+
+# Plot Exit Velocity vs Expected SLG
+ggplot(killerdata, aes(x = exit_velocity_avg, y = xslg)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Exit Velocity vs Expected SLG", x = "Exit Velocity (mph)", y = "Expected SLG") +
+  theme_minimal()
+
+# Batter score calculation slide content
+cat("## Batter Score Calculation\n\nWe use a weighted scoring method to calculate a composite score for each batter based on key metrics.\n\nThe weighted factors include:\n- Expected SLG (xslg)\n- Walk rate (bb_percent)\n- Whiff rate (whiff_percent)\n- Average exit velocity (exit_velocity_avg)\n\nNext, let's visualize the distribution of scores across batters.")
+
+# Calculate and plot the distribution of batter scores
+killerdata$batter_score <- rowSums(killerdata[, names(batter_score_weights)] * batter_score_weights, na.rm = TRUE)
+
+ggplot(killerdata, aes(x = batter_score)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Distribution of Batter Scores", x = "Batter Score", y = "Frequency") +
+  theme_minimal()
+
+# Shiny App for Batter Comparison
+fluidPage(
+  titlePanel("Batter Comparison Killer Plot"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("batter1", "Select Batter 1:", choices = unique(killerdata$last_first)),
+      selectInput("batter2", "Select Batter 2:", choices = unique(killerdata$last_first),
+                  selected = unique(killerdata$last_first)[2])
+    ),
+    mainPanel(
+      splitLayout(cellWidths = c("50%", "50%"),
+                  plotOutput("plot1", height = "700px"),
+                  plotOutput("plot2", height = "700px")),
+      br(),
+      div(
+        style = "text-align: center; margin-top: -10px;",
+        span(textOutput("preferredBatter"),
+             style = "font-size: 26px; font-weight: bold; color: black;"),
+        br(),
+        span(textOutput("scoreDifference"),
+             style = "font-size: 18px; font-weight: normal; color: gray;")
+      )
+    )
+  )
+)
+
+# Shiny server function
+server <- function(input, output) {
+
+  get_player_data <- reactive({
+    req(input$batter1, input$batter2)
+    killerdata %>%
+      filter(last_first %in% c(input$batter1, input$batter2))
+  })
+
+  normalize_stat <- function(x) {
+    ecdf(x)(x) * 100
+  }
+
+  draw_profile_card <- function(player_row, player_percentiles, opponent_percentiles, score_color) {
+    stats <- names(player_percentiles)
+    stat_labels_clean <- stat_labels[stats]
+
+    player_score <- sum(player_percentiles[stats] * batter_score_weights[stats], na.rm = TRUE)
+
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(length(stats) + 3, 3,
+                                               widths = unit(c(0.4, 0.4, 0.2), "npc"))))
+
+    # Player name
+    grid.text(player_row$last_first,
+              vp = viewport(layout.pos.row = 1, layout.pos.col = 1:2),
+              gp = gpar(fontsize = 20, fontface = "bold"))
+
+    # Percentile header
+    grid.text("Percentile",
+              vp = viewport(layout.pos.row = 1, layout.pos.col = 3),
+              gp = gpar(fontsize = 12, fontface = "bold"))
+
+    for (i in seq_along(stats)) {
+      stat <- stats[i]
+      p_val <- player_percentiles[stat]
+      o_val <- opponent_percentiles[stat]
+
+      p_val_clean <- ifelse(is.na(p_val), 0, p_val)
+      o_val_clean <- ifelse(is.na(o_val), 0, o_val)
+
+      # Cap values to range [0, 100]
+      p_val_clean <- max(min(p_val_clean, 100), 0)
+      o_val_clean <- max(min(o_val_clean, 100), 0)
+
+      # Convert to position on bar between 0.05 and 0.95 (to stay inside)
+      pct_to_pos <- function(pct) {
+        0.05 + 0.9 * (pct / 100)
+      }
+
+      bg_color <- if (p_val_clean > o_val_clean) {
+        "palegreen3"
+      } else if (p_val_clean < o_val_clean) {
+        "indianred2"
+      } else {
+        "gray80"
+      }
+
+      row_index <- i + 1
+
+      for (col in 1:3) {
+        grid.rect(gp = gpar(col = NA, fill = bg_color),
+                  vp = viewport(layout.pos.row = row_index, layout.pos.col = col))
+      }
+
+      # Stat label
+      grid.text(stat_labels_clean[i],
+                just = "left", x = unit(0.01, "npc"),
+                gp = gpar(fontsize = 10, fontface = "bold"),
+                vp = viewport(layout.pos.row = row_index, layout.pos.col = 1))
+
+      # Percentile bar background
+      grid.rect(x = unit(0.5, "npc"), width = unit(0.9, "npc"), height = unit(0.6, "lines"),
+                gp = gpar(col = NA, fill = "gray90"),
+                vp = viewport(layout.pos.row = row_index, layout.pos.col = 2))
+
+      # Tick mark
+      grid.rect(x = unit(pct_to_pos(p_val_clean), "npc"),
+                width = unit(0.015, "npc"), height = unit(0.6, "lines"),
+                gp = gpar(col = NA, fill = "black"),
+                vp = viewport(layout.pos.row = row_index, layout.pos.col = 2))
+
+      # Bold percentile value
+      grid.text(round(p_val_clean),
+                x = unit(0.5, "npc"), y = unit(0.5, "npc"),
+                gp = gpar(fontsize = 9, fontface = "bold"),
+                vp = viewport(layout.pos.row = row_index, layout.pos.col = 3))
+    }
+
+    # Batter Score (bold and colored)
+    grid.text(paste("Score:", round(player_score, 1)),
+              gp = gpar(fontsize = 14, fontface = "bold", col = score_color),
+              vp = viewport(layout.pos.row = length(stats) + 2, layout.pos.col = 1:3))
+  }
+
+  calculate_scores <- reactive({
+    stats <- names(stat_labels)
+    percentiles_df <- killerdata
+    for (stat in stats) {
+      percentiles_df[[paste0(stat, "_pct")]] <- normalize_stat(percentiles_df[[stat]])
+    }
+
+    p1 <- killerdata %>% filter(last_first == input$batter1)
+    p2 <- killerdata %>% filter(last_first == input$batter2)
+
+    p1_percentiles <- percentiles_df %>%
+      filter(last_first == input$batter1) %>%
+      select(paste0(stats, "_pct"))
+    p2_percentiles <- percentiles_df %>%
+      filter(last_first == input$batter2) %>%
+      select(paste0(stats, "_pct"))
+
+    list(p1_percentiles = p1_percentiles, p2_percentiles = p2_percentiles)
+  })
+
+  output$plot1 <- renderPlot({
+    scores <- calculate_scores()
+    draw_profile_card(scores$p1_percentiles, scores$p2_percentiles, "blue")
+  })
+
+  output$plot2 <- renderPlot({
+    scores <- calculate_scores()
+    draw_profile_card(scores$p2_percentiles, scores$p1_percentiles, "red")
+  })
+
+  output$preferredBatter <- renderText({
+    scores <- calculate_scores()
+    p1_score <- sum(scores$p1_percentiles * batter_score_weights)
+    p2_score <- sum(scores$p2_percentiles * batter_score_weights)
+
+    if (p1_score > p2_score) {
+      paste(input$batter1, "is the better batter!")
+    } else if (p1_score < p2_score) {
+      paste(input$batter2, "is the better batter!")
+    } else {
+      "Both batters are equally good!"
+    }
+  })
+
+  output$scoreDifference <- renderText({
+    scores <- calculate_scores()
+    p1_score <- sum(scores$p1_percentiles * batter_score_weights)
+    p2_score <- sum(scores$p2_percentiles * batter_score_weights)
+    paste("Score difference: ", round(abs(p1_score - p2_score), 2))
+  })
+}
+```
+:::
